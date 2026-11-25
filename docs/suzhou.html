@@ -88,6 +88,7 @@ let chunks = [];
 let idx = 0;
 let pausedAt = 0;
 let cancelled = false;
+let retryTimer = 0;
 
 function partsOf(stop){
   const key = (stop.section || stop.label || '').replace(/\s+/g,'');
@@ -104,11 +105,15 @@ function chunksOf(text){
   if (buf) out.push(buf);
   return out.filter(s => s.trim().length>1);
 }
+function hardReset(){
+  try { if (typeof speechSynthesis !== 'undefined'){ speechSynthesis.resume(); speechSynthesis.cancel(); } } catch(e){}
+}
 function stopAll(){
   cancelled = true;
+  clearTimeout(retryTimer);
   chunks = []; idx = 0; pausedAt = 0;
   speechNo = null; paused = false;
-  try { speechSynthesis.cancel(); } catch(e){}
+  hardReset();
   renderRoute(); updateReaderButton();
 }
 function speakFrom(start){
@@ -125,9 +130,17 @@ function speakFrom(start){
     u.lang = 'zh-CN'; u.rate = 1; u.pitch = 1;
     u.onend = () => { if (cancelled) return; idx++; next(); };
     u.onerror = () => { if (cancelled) return; idx++; next(); };
-    speechSynthesis.speak(u);
+    try { speechSynthesis.speak(u); } catch(e){}
   };
-  setTimeout(next, 90);
+  setTimeout(next, 200);
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(() => {
+    if (cancelled || paused) return;
+    if (!speechSynthesis.speaking && !speechSynthesis.pending){
+      hardReset();
+      setTimeout(next, 250);
+    }
+  }, 1200);
 }
 function playStop(stop){
   if (!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance !== 'function') return;
@@ -138,30 +151,23 @@ function playStop(stop){
   paused = false;
   pausedAt = 0;
   renderRoute(); updateReaderButton();
-  speakFrom(0);
-}
-function ensureResumed(stop, attempt){
-  if (speechNo !== stop.no || paused) return;
-  if (speechSynthesis.speaking) return;
-  if (attempt >= 3){
-    // 原生 resume 没接上，从句首重开（同一句）
-    speakFrom(pausedAt);
-    return;
-  }
-  setTimeout(() => ensureResumed(stop, attempt + 1), 350);
+  hardReset();
+  setTimeout(() => speakFrom(0), 120);
 }
 function toggleStop(stop){
   if (speechNo === stop.no){
     if (!paused){
-      pausedAt = idx;
-      try { speechSynthesis.pause(); } catch(e){}
       paused = true;
+      pausedAt = idx;
+      cancelled = true;
+      clearTimeout(retryTimer);
+      hardReset();
       renderRoute(); updateReaderButton();
     } else {
       paused = false;
-      try { speechSynthesis.resume(); } catch(e){}
       renderRoute(); updateReaderButton();
-      ensureResumed(stop, 0);
+      hardReset();
+      setTimeout(() => speakFrom(pausedAt), 250);
     }
     return;
   }
