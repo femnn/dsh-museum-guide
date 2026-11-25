@@ -49,5 +49,8 @@
     "type": "git",
     "url": "git+https://github.com/femnn/dsh-museum-guide.git"
   },
-  "homepage": "https://github.com/femnn/dsh-museum-guide#readme"
+  "homepage": "https://github.com/femnn/dsh-museum-guide#readme",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/"
+  }
 }
