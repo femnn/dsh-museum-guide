@@ -118,6 +118,11 @@ window.__ModuleLoader__.load({
       stopSpeak: '停止',
       speaking: '朗读中 {n}/{total}',
       speechUnsupported: '当前浏览器不支持语音朗读。',
+      ttsGenerate: '用本地模型生成音频',
+      ttsGenerating: '生成中…',
+      ttsModel: '语音模型',
+      ttsFailed: '生成失败',
+      ttsHint: '本机 YoVoice 模型，几秒到一分钟；生成后可播放或下载。',
       mapSchematic: '示意图：按官方空间编号与参观顺序绘制，现场细部以馆内标识为准。',
       mapOfficial: '官方导览图',
       uploadMap: '上传官方导览图照片',
@@ -228,6 +233,11 @@ window.__ModuleLoader__.load({
       stopSpeak: 'Stop',
       speaking: 'Speaking {n}/{total}',
       speechUnsupported: 'This browser has no speech synthesis.',
+      ttsGenerate: 'Render with local model',
+      ttsGenerating: 'Rendering…',
+      ttsModel: 'Voice model',
+      ttsFailed: 'Render failed',
+      ttsHint: 'Local YoVoice model; takes a few seconds to a minute.',
       mapSchematic: 'Schematic: drawn from official space IDs and visit order; follow on-site signs for detail.',
       mapOfficial: 'Official plan',
       uploadMap: 'Upload an official plan photo',
@@ -713,9 +723,24 @@ window.__ModuleLoader__.load({
       )
     }
 
+    function mergeStops(list) {
+      const out = []
+      for (const stop of list) {
+        const prev = out[out.length - 1]
+        const same = prev && stop.section && prev.section && String(prev.section) === String(stop.section)
+        if (same) {
+          if (!prev.label.includes(stop.label)) prev.label = `${prev.label} · ${stop.label}`
+          if (stop.note && !prev.note.includes(stop.note)) prev.note = prev.note ? `${prev.note} · ${stop.note}` : stop.note
+          continue
+        }
+        out.push({ ...stop })
+      }
+      return out
+    }
+
     function stopsOf(map) {
       const explicit = (map && Array.isArray(map.stops) ? map.stops : []).filter(stop => stop && stop.label)
-      if (explicit.length) return explicit
+      if (explicit.length) return mergeStops(explicit)
       const route = String((map && map.route) || '')
       if (!route) return []
       return route.split(/→|->/).map(part => part.trim()).filter(Boolean).map((part, index) => {
@@ -842,12 +867,34 @@ window.__ModuleLoader__.load({
       return { speech, play, toggle, stop }
     }
 
-    function HallReader({ stop, sections, speech, onToggleSpeech, onStopSpeech, t }) {
+    function HallReader({ projectId, stop, sections, speech, onToggleSpeech, onStopSpeech, ttsModels, ttsModel, onModelChange, t }) {
       const parts = hallParts(sections, stop)
       const chars = parts.reduce((sum, section) => sum + (section.chars || 0), 0)
       const videos = parts.reduce((sum, section) => sum + ((section.videos || []).length), 0)
       const [copied, setCopied] = useState(false)
+      const [audioUrl, setAudioUrl] = useState('')
+      const [ttsBusy, setTtsBusy] = useState(false)
+      const [ttsError, setTtsError] = useState('')
       const playing = Boolean(speech && speech.no && stop && speech.no === stop.no)
+
+      useEffect(() => {
+        setAudioUrl('')
+        setTtsError('')
+      }, [stop && stop.no, ttsModel])
+
+      const generate = useCallback(async () => {
+        setTtsBusy(true)
+        setTtsError('')
+        try {
+          const text = parts.map(part => part.text || '').join('\n\n')
+          const value = await api('/tts', { method: 'POST', body: { id: projectId, text, model: ttsModel } })
+          setAudioUrl(value.url)
+        } catch (failure) {
+          setTtsError(String(failure.message || failure))
+        } finally {
+          setTtsBusy(false)
+        }
+      }, [parts, projectId, ttsModel])
       if (!parts.length) {
         return h('div', { className: 'mg-reader' },
           h('h3', { className: 'mg-reader-title' }, stop ? stop.label : ''),
@@ -886,6 +933,26 @@ window.__ModuleLoader__.load({
             }, copied ? '✓' : t('copySection')),
           ),
         ),
+        h('div', { className: 'mg-tts' },
+          ttsModels.length > 1
+            ? h('label', { className: 'mg-tts-model' },
+              h('span', null, t('ttsModel')),
+              h('select', {
+                className: 'mg-select',
+                value: ttsModel,
+                onChange: event => onModelChange(event.target.value),
+              }, ttsModels.map(model => h('option', { key: model.path, value: model.path }, model.name))),
+            )
+            : null,
+          h('button', {
+            type: 'button',
+            className: 'mg-btn is-ghost',
+            disabled: ttsBusy,
+            onClick: generate,
+          }, ttsBusy ? t('ttsGenerating') : t('ttsGenerate')),
+          ttsError ? h('span', { className: 'mg-tts-error' }, `${t('ttsFailed')}：${ttsError}`) : null,
+        ),
+        audioUrl ? h('audio', { className: 'mg-audio', src: audioUrl, controls: true }) : null,
         h('div', { className: 'mg-reader-body' }, parts.map(part => h('article', { key: part.id, className: 'mg-reader-part' },
           h('h4', { className: 'mg-reader-sub' }, part.title),
           h('div', { className: 'mg-reader-text' }, part.text || ''),
@@ -902,7 +969,19 @@ window.__ModuleLoader__.load({
       const [uploading, setUploading] = useState(false)
       const [error, setError] = useState('')
       const [active, setActive] = useState(0)
+      const [ttsModels, setTtsModels] = useState([])
+      const [ttsModel, setTtsModel] = useState('')
       const { speech, toggle, stop: stopSpeech } = useSpeech(sections)
+
+      useEffect(() => {
+        let alive = true
+        api('/tts-models').then(list => {
+          if (!alive || !Array.isArray(list) || !list.length) return
+          setTtsModels(list)
+          setTtsModel(current => current || list[0].path)
+        }).catch(() => {})
+        return () => { alive = false }
+      }, [])
 
       const stops = stopsOf(map)
       const floors = floorsOf(map)
@@ -1074,11 +1153,15 @@ window.__ModuleLoader__.load({
               ),
             )
             : h(HallReader, {
+              projectId,
               stop: current,
               sections,
               speech,
               onToggleSpeech: toggle,
               onStopSpeech: stopSpeech,
+              ttsModels,
+              ttsModel,
+              onModelChange: setTtsModel,
               t,
             }),
         ),
@@ -1699,6 +1782,11 @@ a.mg-source-title:hover{color:var(--dsw-alias-brand-primary)}
 .mg-reader-title{margin:0;font-size:16px;font-weight:600}
 .mg-reader-meta{margin:3px 0 0;font-size:11px;color:var(--dsw-alias-label-secondary)}
 .mg-reader-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:14px;overflow:auto;padding-right:4px}
+.mg-tts{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-top:2px}
+.mg-tts-model{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dsw-alias-label-secondary)}
+.mg-select{font-family:inherit;font-size:11.5px;padding:4px 6px;border-radius:7px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);max-width:240px}
+.mg-tts-error{font-size:11px;color:var(--dsw-alias-state-error-primary)}
+.mg-audio{width:100%;height:34px;margin-top:2px}
 .mg-reader-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
 .mg-speaking{font-size:11px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
 .mg-reader-part{min-width:0}

@@ -67,6 +67,19 @@
 
 `museum_guide_map` 的 `floors` 支持两种写法：`rooms[{no,name,halls[]}]`（推荐，带官方空间编号）或旧的 `halls[]`。没有 floors 时退回按 `zones[].floor` 自动分组。
 
+## 本地语音（YoVoice）
+
+面板阅读区有「用本地模型生成音频」：调用本机 YoVoice 的 `audiocpp_server` 与 `.gguf` 模型生成 WAV，生成后可直接播放/下载。模型目录默认扫描 `~/.yovoice/models`，有多个模型时阅读区会出现下拉选择。
+
+配置项（`cordis.patch.yml`）：
+
+- `ttsEnginePath`：`audiocpp_server` 路径，默认 `/Applications/yovoice.app/Contents/Resources/engine/audiocpp_server`
+- `ttsModelDir`：模型目录，默认 `~/.yovoice/models`
+- `ttsPort`：本地引擎端口，默认 49371（与 YoVoice App 自己用的端口分开）
+- `ttsVoiceRef` / `ttsReferenceText`：自定义音色的参考音频路径与对应文字；填了就按这个音色生成
+
+生成结果缓存在 `~/.dsh/museum-guide/audio/`，同样的文字与模型不会重复生成。
+
 ## 讲解视频
 
 每一厅可以挂多条视频，记录平台、标题、链接和备注。面板的逐字稿卡片会显示「视频 n」和可点击的链接，展开后可见；导出的 Markdown 也会在每段末尾列出视频。只挂真实可打开的链接，搜不到就留空。

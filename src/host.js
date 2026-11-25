@@ -3,13 +3,15 @@
 // 职责：逐字稿项目的建档、展厅分段、资料与地图记录、字数审核（确定性计数）、
 // 终稿导出，以及给侧边栏面板读写的 /api/museum-guide 路由。
 // 研究与写作由会话里的 Agent 完成；这里保证「地图先行、逐厅写作、字数达标」不被糊弄。
-import { mkdir, readFile, writeFile, readdir, unlink } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, readdir, unlink, stat } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 export const name = 'museum-guide'
-export { parseMapText }
+export { parseMapText, listTtsModels, synthesize, stopTtsEngine }
 export const inject = ['webServer', 'connection']
 
 const API_PREFIX = '/api/museum-guide'
@@ -20,6 +22,11 @@ const DEFAULTS = {
   minChars: 20000,
   introMaxChars: 1300,
   charsPerMinute: 240,
+  ttsEnginePath: '/Applications/yovoice.app/Contents/Resources/engine/audiocpp_server',
+  ttsModelDir: '~/.yovoice/models',
+  ttsPort: 49371,
+  ttsVoiceRef: '',
+  ttsReferenceText: '',
 }
 
 /* ------------------------------------------------------------------ *
@@ -395,6 +402,128 @@ function renderMarkdown(project) {
 }
 
 /* ------------------------------------------------------------------ *
+ * 本地 TTS（YoVoice / audio.cpp）
+ * ------------------------------------------------------------------ */
+
+let ttsEngine = null
+
+function expandHome(value) {
+  return String(value || '').replace(/^~(?=$|[\\/])/, homedir())
+}
+
+async function listTtsModels(config) {
+  const root = expandHome(config.ttsModelDir)
+  const out = []
+  async function walk(dir, depth) {
+    if (depth > 3) return
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
+    for (const entry of entries) {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        await walk(path, depth + 1)
+      } else if (entry.name.endsWith('.gguf')) {
+        out.push({ path, name: entry.name })
+      }
+    }
+  }
+  await walk(root, 0)
+  out.sort((a, b) => a.name.localeCompare(b.name))
+  return out
+}
+
+async function waitHealth(port, tries) {
+  for (let i = 0; i < tries; i += 1) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/health`)
+      if (response.ok) return true
+    } catch {
+      /* 还没起来 */
+    }
+    await new Promise(resolve => setTimeout(resolve, 250))
+  }
+  return false
+}
+
+function stopTtsEngine() {
+  if (ttsEngine && ttsEngine.child) {
+    try { ttsEngine.child.kill('SIGTERM') } catch { /* 已退出 */ }
+  }
+  ttsEngine = null
+}
+
+async function ensureTtsEngine(config, modelPath) {
+  const port = Number(config.ttsPort) || 49371
+  if (ttsEngine && ttsEngine.model === modelPath && ttsEngine.child && ttsEngine.child.exitCode === null) {
+    return port
+  }
+  stopTtsEngine()
+  const root = await ensureDirs(config)
+  const configPath = join(root, 'tts-config.json')
+  await writeFile(configPath, JSON.stringify({
+    backend: 'metal',
+    host: '127.0.0.1',
+    port,
+    idle_unload_ms: 600000,
+    lazy_load: true,
+    max_loaded_models: 1,
+    max_request_body_bytes: 16 * 1024 * 1024,
+    models: [{ family: 'voxcpm2', id: 'index', mode: 'offline', path: modelPath, task: 'tts' }],
+  }, null, 2), 'utf8')
+  const child = spawn(expandHome(config.ttsEnginePath), [
+    '--config', configPath,
+    '--host', '127.0.0.1',
+    '--port', String(port),
+    '--no-ui',
+    '--backend', 'metal',
+    '--log-file', join(root, 'tts-engine.log'),
+  ], { stdio: 'ignore' })
+  ttsEngine = { child, model: modelPath, port }
+  const ok = await waitHealth(port, 160)
+  if (!ok) throw new Error('本地语音引擎启动失败，请确认 YoVoice 的 audiocpp_server 路径')
+  return port
+}
+
+async function synthesize(config, input, options) {
+  const text = String(input || '').trim()
+  if (!text) throw new Error('没有要合成的文字')
+  const models = await listTtsModels(config)
+  const modelPath = String(options.model || '').trim() || (models[0] && models[0].path) || ''
+  if (!modelPath) throw new Error('没有找到 .gguf 语音模型，请检查 ttsModelDir')
+  const voiceRef = String(options.voiceRef || config.ttsVoiceRef || '').trim()
+  const referenceText = String(options.referenceText || config.ttsReferenceText || '').trim()
+  const hash = createHash('sha1').update(`${modelPath}|${voiceRef}|${referenceText}|${text}`).digest('hex').slice(0, 24)
+  const root = await ensureDirs(config)
+  const audioDir = join(root, 'audio')
+  await mkdir(audioDir, { recursive: true })
+  const file = join(audioDir, `${hash}.wav`)
+  try {
+    const info = await stat(file)
+    if (info.size > 1024) return { file: `${hash}.wav`, cached: true }
+  } catch {
+    /* 还没生成 */
+  }
+  const port = await ensureTtsEngine(config, modelPath)
+  const body = { model: 'index', input: text, response_format: 'wav' }
+  if (voiceRef) {
+    body.voice_ref = expandHome(voiceRef)
+    if (referenceText) body.reference_text = referenceText
+  }
+  const response = await fetch(`http://127.0.0.1:${port}/v1/audio/speech`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '')
+    throw new Error(`语音生成失败：${detail.slice(0, 200) || response.status}`)
+  }
+  const bytes = Buffer.from(await response.arrayBuffer())
+  if (bytes.length < 1024) throw new Error('语音生成返回为空')
+  await writeFile(file, bytes)
+  return { file: `${hash}.wav`, cached: false }
+}
+
+/* ------------------------------------------------------------------ *
  * HTTP 工具
  * ------------------------------------------------------------------ */
 
@@ -539,6 +668,37 @@ export function apply(ctx, config) {
           return
         }
 
+        if (method === 'GET' && route === '/tts-models') {
+          sendOk(res, await listTtsModels(cfg))
+          return
+        }
+
+        if (method === 'POST' && route === '/tts') {
+          const body = await readJsonBody(req)
+          const result = await synthesize(cfg, body.text, {
+            model: body.model,
+            voiceRef: body.voiceRef,
+            referenceText: body.referenceText,
+          })
+          sendOk(res, {
+            url: `/api/museum-guide/audio?file=${encodeURIComponent(result.file)}`,
+            cached: result.cached,
+          })
+          return
+        }
+
+        if (method === 'GET' && route === '/audio') {
+          const name = url.searchParams.get('file') || ''
+          if (!/^[a-f0-9]{24}\.wav$/.test(name)) { sendFail(res, 400, '文件名不合法'); return }
+          const root = rootOf(cfg)
+          const bytes = await readFile(join(root, 'audio', name))
+          res.statusCode = 200
+          res.setHeader('content-type', 'audio/wav')
+          res.setHeader('cache-control', 'private, max-age=86400')
+          res.end(bytes)
+          return
+        }
+
         if (method === 'GET' && route === '/map-image') {
           const id = url.searchParams.get('id') || ''
           const project = await readProject(cfg, id)
@@ -573,6 +733,8 @@ export function apply(ctx, config) {
       }
     },
   }), 'dsh-museum-guide: /api/museum-guide routes')
+
+  ctx.effect(() => () => stopTtsEngine(), 'dsh-museum-guide: stop local tts engine')
 
   /* ---------- Agent 工具 ---------- */
   ctx.inject(['tools'], sctx => {
