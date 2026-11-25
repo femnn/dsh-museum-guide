@@ -1498,7 +1498,7 @@ window.__ModuleLoader__.load({
 .mg-btn{appearance:none;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border-radius:8px;padding:6px 12px;font-size:12.5px;line-height:1.4;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:6px;transition:background .12s,border-color .12s}
 .mg-btn:hover{background:var(--dsw-alias-bg-layer-2)}
 .mg-btn:disabled{opacity:.5;cursor:not-allowed}
-.mg-btn.is-primary{background:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);color:#fff}
+.mg-btn.is-primary{background:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-bg-base)}
 .mg-btn.is-primary:hover{filter:brightness(1.05);background:var(--dsw-alias-brand-primary)}
 .mg-btn.is-ghost{background:transparent}
 .mg-btn.is-danger{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-border-l1);background:transparent}
@@ -1649,7 +1649,7 @@ a.mg-source-title:hover{color:var(--dsw-alias-brand-primary)}
 .mg-rooms{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px}
 .mg-room{border:1px dashed var(--dsw-alias-border-l1);border-radius:9px;padding:8px 9px 9px;background:var(--dsw-alias-bg-base);min-width:0}
 .mg-room-head{display:flex;align-items:center;gap:7px;margin-bottom:6px;min-width:0}
-.mg-room-no{flex:0 0 auto;display:inline-flex;width:18px;height:18px;align-items:center;justify-content:center;border-radius:5px;background:var(--dsw-alias-brand-primary);color:#fff;font-size:10.5px;font-weight:600}
+.mg-room-no{flex:0 0 auto;display:inline-flex;width:18px;height:18px;align-items:center;justify-content:center;border-radius:5px;background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-bg-base);font-size:10.5px;font-weight:600}
 .mg-room-name{font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mg-room-halls{display:flex;flex-wrap:wrap;gap:5px}
 .mg-hall-chip{appearance:none;font-family:inherit;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border-radius:999px;padding:3px 8px;font-size:11.5px;cursor:pointer;display:inline-flex;align-items:center;gap:5px}
