@@ -1,0 +1,53 @@
+{
+  "name": "dsh-museum-guide",
+  "version": "1.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Museum guide writer for DeepSeek Harness: finds the official floor map first, researches the web plus social platforms, writes a 22,000-character hall-by-hall read-aloud script, attaches per-hall videos, and audits the length.",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "src",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "docs",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "museum",
+    "guide",
+    "script",
+    "travel"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/femnn/dsh-museum-guide.git"
+  },
+  "homepage": "https://github.com/femnn/dsh-museum-guide#readme"
+}
