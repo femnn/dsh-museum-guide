@@ -59,14 +59,14 @@ video-link,.vlink{display:flex;gap:8px;align-items:center;text-decoration:none;c
 <section class="reader" id="reader">
   <div class="rhead">
     <div class="row1">
-      <button class="back" id="back" aria-label="返回">‹</button>
+      <button type="button" class="back" id="back" aria-label="返回">‹</button>
       <h2 id="rtitle"></h2>
     </div>
     <div class="meta" id="rmeta"></div>
     <div class="ractions">
-      <button class="btn primary" id="rplay">▶ 朗读</button>
-      <button class="btn" id="rstop" style="display:none">⏹ 停止</button>
-      <button class="btn" id="rcopy">复制这段</button>
+      <button type="button" class="btn primary" id="rplay">▶ 朗读</button>
+      <button type="button" class="btn" id="rstop" style="display:none">⏹ 停止</button>
+      <button type="button" class="btn" id="rcopy">复制这段</button>
     </div>
   </div>
   <div class="rbody" id="rbody"></div>
@@ -140,18 +140,28 @@ function playStop(stop){
   renderRoute(); updateReaderButton();
   speakFrom(0);
 }
+function ensureResumed(stop, attempt){
+  if (speechNo !== stop.no || paused) return;
+  if (speechSynthesis.speaking) return;
+  if (attempt >= 3){
+    // 原生 resume 没接上，从句首重开（同一句）
+    speakFrom(pausedAt);
+    return;
+  }
+  setTimeout(() => ensureResumed(stop, attempt + 1), 350);
+}
 function toggleStop(stop){
   if (speechNo === stop.no){
-    if (paused){
-      paused = false;
-      renderRoute(); updateReaderButton();
-      speakFrom(pausedAt);
-    } else {
-      paused = true;
+    if (!paused){
       pausedAt = idx;
-      cancelled = true;
-      try { speechSynthesis.cancel(); } catch(e){}
+      try { speechSynthesis.pause(); } catch(e){}
+      paused = true;
       renderRoute(); updateReaderButton();
+    } else {
+      paused = false;
+      try { speechSynthesis.resume(); } catch(e){}
+      renderRoute(); updateReaderButton();
+      ensureResumed(stop, 0);
     }
     return;
   }
@@ -163,6 +173,9 @@ function updateReaderButton(){
   rplay.textContent = on ? (paused ? '▶ 继续' : '⏸ 暂停') : '▶ 朗读';
   rplay.classList.toggle('primary', !on);
   rstop.style.display = on ? '' : 'none';
+  const status = on ? (paused ? '已暂停' : '朗读中') : '';
+  const meta = rmeta.dataset.base || '';
+  rmeta.textContent = status ? meta + ' · ' + status : meta;
 }
 function fmt(n){ return Number(n||0).toLocaleString('zh-CN'); }
 function renderRoute(){
@@ -187,7 +200,7 @@ function renderRoute(){
       row.innerHTML = '<span class="num">'+stop.no+'</span>'
         + '<span class="body"><span class="name"></span><span class="note"></span></span>'
         + (vids ? '<span class="v">▶ '+vids+'</span>' : '')
-        + '<button class="play'+(speechNo===stop.no?' on':'')+'" aria-label="播放">'+(speechNo===stop.no&&!paused?'⏸':'▶')+'</button>';
+        + '<button type="button" class="play'+(speechNo===stop.no?' on':'')+'" aria-label="播放">'+(speechNo===stop.no&&!paused?'⏸':'▶')+'</button>';
       row.querySelector('.name').textContent = stop.label;
       row.querySelector('.note').textContent = stop.note || '';
       row.addEventListener('click', () => openStop(i));
@@ -203,7 +216,8 @@ function openStop(i){
   const chars = parts.reduce((n,p)=>n+(p.chars||0),0);
   const vids = parts.reduce((n,p)=>n+(p.videos||[]).length,0);
   rtitle.textContent = stop.label;
-  rmeta.textContent = fmt(chars)+' 字 · '+parts.length+' 段'+(vids?' · '+vids+' 视频':'');
+  rmeta.dataset.base = fmt(chars)+' 字 · '+parts.length+' 段'+(vids?' · '+vids+' 视频':'');
+  rmeta.textContent = rmeta.dataset.base;
   rbody.innerHTML = '';
   parts.forEach(part => {
     const wrap = document.createElement('article'); wrap.className='part';
