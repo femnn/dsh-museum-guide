@@ -91,11 +91,19 @@ let cancelled = false;
 let retryTimer = 0;
 
 function partsOf(stop){
-  const key = (stop.section || stop.label || '').replace(/\s+/g,'');
-  const all = DATA.sections.filter(s => !key || s.title.replace(/\s+/g,'').includes(key));
-  if (all.length) return all;
-  const label = (stop.label || '').replace(/\s+/g,'');
-  return DATA.sections.filter(s => s.title.replace(/\s+/g,'').includes(label));
+  const norm = value => String(value || '').replace(/\s+/g,'');
+  const label = norm(stop.label);
+  if (label){
+    const byLabel = DATA.sections.filter(s => norm(s.title).includes(label));
+    if (byLabel.length) return byLabel;
+  }
+  const wanted = norm(stop.section || stop.label);
+  if (!wanted) return [];
+  const direct = DATA.sections.filter(s => norm(s.title).includes(wanted));
+  if (!direct.length) return [];
+  const base = norm(direct[0].title).split('（')[0].split('：')[0].split(':')[0];
+  const siblings = DATA.sections.filter(s => norm(s.title).split('（')[0].split('：')[0].split(':')[0] === base);
+  return siblings.length > direct.length ? siblings : direct;
 }
 function chunksOf(text){
   const clean = String(text||'').replace(/\s+/g,' ').trim();
