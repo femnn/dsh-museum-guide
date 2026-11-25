@@ -654,7 +654,7 @@ window.__ModuleLoader__.load({
             }),
             h('text', {
               x: room.x + 14.5, y: room.y + 18, textAnchor: 'middle',
-              style: { fill: '#fff', fontSize: 9.5, fontWeight: 600 },
+              style: { fill: 'var(--dsw-alias-bg-base)', fontSize: 9.5, fontWeight: 600 },
             }, room.no),
             h('text', {
               x: room.x + 28, y: room.y + 18,
@@ -765,20 +765,14 @@ window.__ModuleLoader__.load({
       return chunks.filter(chunk => chunk.trim().length > 1)
     }
 
-    function HallReader({ stop, sections, t }) {
-      const parts = hallParts(sections, stop)
-      const chars = parts.reduce((sum, section) => sum + (section.chars || 0), 0)
-      const videos = parts.reduce((sum, section) => sum + ((section.videos || []).length), 0)
-      const [copied, setCopied] = useState(false)
-      const [speech, setSpeech] = useState('idle')
-      const [spoken, setSpoken] = useState(0)
-      const [totalChunks, setTotalChunks] = useState(0)
-      const stopRef = useRef(false)
+    function useSpeech(sections) {
+      const [speech, setSpeech] = useState({ no: null, paused: false, spoken: 0, total: 0 })
       const chunksRef = useRef([])
       const indexRef = useRef(0)
+      const cancelled = useRef(false)
 
-      const cancel = useCallback(() => {
-        stopRef.current = true
+      const stop = useCallback(() => {
+        cancelled.current = true
         chunksRef.current = []
         indexRef.current = 0
         try {
@@ -786,29 +780,25 @@ window.__ModuleLoader__.load({
         } catch {
           /* 没有语音合成 */
         }
-        setSpeech('idle')
-        setSpoken(0)
+        setSpeech({ no: null, paused: false, spoken: 0, total: 0 })
       }, [])
 
-      useEffect(() => cancel, [cancel, stop && stop.no])
-
-      const speak = useCallback(() => {
+      const play = useCallback(target => {
         const synth = window.speechSynthesis
         if (!synth || typeof window.SpeechSynthesisUtterance !== 'function') return
-        cancel()
-        stopRef.current = false
+        stop()
+        cancelled.current = false
+        const parts = hallParts(sections, target)
         const chunks = parts.flatMap(part => speechChunks(part.text))
         if (!chunks.length) return
         chunksRef.current = chunks
         indexRef.current = 0
-        setTotalChunks(chunks.length)
-        setSpeech('playing')
+        setSpeech({ no: target.no, paused: false, spoken: 0, total: chunks.length })
         const next = () => {
-          if (stopRef.current) return
+          if (cancelled.current) return
           const index = indexRef.current
           if (index >= chunksRef.current.length) {
-            setSpeech('idle')
-            setSpoken(0)
+            setSpeech({ no: null, paused: false, spoken: 0, total: 0 })
             return
           }
           const utterance = new SpeechSynthesisUtterance(chunksRef.current[index])
@@ -816,33 +806,48 @@ window.__ModuleLoader__.load({
           utterance.rate = 1
           utterance.pitch = 1
           utterance.onend = () => {
-            if (stopRef.current) return
+            if (cancelled.current) return
             indexRef.current = index + 1
-            setSpoken(index + 1)
+            setSpeech(current => ({ ...current, spoken: index + 1 }))
             next()
           }
           utterance.onerror = () => {
-            if (stopRef.current) return
+            if (cancelled.current) return
             indexRef.current = index + 1
             next()
           }
           synth.speak(utterance)
         }
         next()
-      }, [cancel, parts])
+      }, [sections, stop])
 
-      const togglePause = useCallback(() => {
+      const toggle = useCallback(target => {
         const synth = window.speechSynthesis
-        if (!synth) return
-        if (speech === 'playing') {
-          synth.pause()
-          setSpeech('paused')
-        } else if (speech === 'paused') {
-          synth.resume()
-          setSpeech('playing')
+        if (speech.no === target.no) {
+          if (!synth) return
+          if (speech.paused) {
+            synth.resume()
+            setSpeech(current => ({ ...current, paused: false }))
+          } else {
+            synth.pause()
+            setSpeech(current => ({ ...current, paused: true }))
+          }
+          return
         }
-      }, [speech])
+        play(target)
+      }, [play, speech])
 
+      useEffect(() => stop, [stop])
+
+      return { speech, play, toggle, stop }
+    }
+
+    function HallReader({ stop, sections, speech, onToggleSpeech, onStopSpeech, t }) {
+      const parts = hallParts(sections, stop)
+      const chars = parts.reduce((sum, section) => sum + (section.chars || 0), 0)
+      const videos = parts.reduce((sum, section) => sum + ((section.videos || []).length), 0)
+      const [copied, setCopied] = useState(false)
+      const playing = Boolean(speech && speech.no && stop && speech.no === stop.no)
       if (!parts.length) {
         return h('div', { className: 'mg-reader' },
           h('h3', { className: 'mg-reader-title' }, stop ? stop.label : ''),
@@ -855,19 +860,18 @@ window.__ModuleLoader__.load({
           h('div', { className: 'mg-reader-headtext' },
             h('h3', { className: 'mg-reader-title' }, stop.label),
             h('p', { className: 'mg-reader-meta' },
-              [`${formatNumber(chars)} ${t('sectionChars')}`, parts.length > 1 ? `${parts.length} 段` : '', videos ? `${videos} ${t('videos')}` : '']
-                .filter(Boolean).join(' · ')),
+              [
+                `${formatNumber(chars)} ${t('sectionChars')}`,
+                parts.length > 1 ? `${parts.length} 段` : '',
+                videos ? `${videos} ${t('videos')}` : '',
+                playing && speech.total ? t('speaking', { n: Math.min(speech.spoken + 1, speech.total), total: speech.total }) : '',
+              ].filter(Boolean).join(' · ')),
           ),
           h('div', { className: 'mg-reader-actions' },
-            speech === 'idle'
-              ? h('button', { type: 'button', className: 'mg-btn is-primary', onClick: speak }, `▶ ${t('speak')}`)
-              : h('button', { type: 'button', className: 'mg-btn is-ghost', onClick: togglePause },
-                speech === 'playing' ? `⏸ ${t('pauseSpeak')}` : `▶ ${t('resumeSpeak')}`),
-            speech !== 'idle'
-              ? h('button', { type: 'button', className: 'mg-btn is-ghost', onClick: cancel }, `⏹ ${t('stopSpeak')}`)
-              : null,
-            speech !== 'idle' && totalChunks
-              ? h('span', { className: 'mg-speaking' }, t('speaking', { n: Math.min(spoken + 1, totalChunks), total: totalChunks }))
+            h('button', { type: 'button', className: 'mg-btn is-primary', onClick: () => onToggleSpeech(stop) },
+              !playing ? `▶ ${t('speak')}` : (speech.paused ? `▶ ${t('resumeSpeak')}` : `⏸ ${t('pauseSpeak')}`)),
+            playing
+              ? h('button', { type: 'button', className: 'mg-btn is-ghost', onClick: onStopSpeech }, `⏹ ${t('stopSpeak')}`)
               : null,
             h('button', {
               type: 'button',
@@ -898,6 +902,7 @@ window.__ModuleLoader__.load({
       const [uploading, setUploading] = useState(false)
       const [error, setError] = useState('')
       const [active, setActive] = useState(0)
+      const { speech, toggle, stop: stopSpeech } = useSpeech(sections)
 
       const stops = stopsOf(map)
       const floors = floorsOf(map)
@@ -993,16 +998,37 @@ window.__ModuleLoader__.load({
                 const index = stops.indexOf(stop)
                 const parts = hallParts(sections, stop)
                 const vids = parts.reduce((sum, part) => sum + ((part.videos || []).length), 0)
-                return h('button', {
+                const speaking = Boolean(speech.no && speech.no === stop.no)
+                return h('div', {
                   key: stop.no,
-                  type: 'button',
-                  className: `mg-stop${index === active ? ' is-active' : ''}`,
-                  onClick: () => setActive(index),
+                  className: `mg-stop${index === active ? ' is-active' : ''}${speaking ? ' is-speaking' : ''}`,
+                  role: 'button',
+                  tabIndex: 0,
+                  onClick: () => {
+                    setActive(index)
+                    if (speech.no && speech.no !== stop.no) stopSpeech()
+                  },
+                  onKeyDown: event => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault()
+                      setActive(index)
+                    }
+                  },
                 },
-                  h('span', { className: 'mg-stop-no' }, stop.no),
+                  h('button', {
+                    type: 'button',
+                    className: 'mg-stop-play',
+                    title: speaking ? t('pauseSpeak') : t('speak'),
+                    'aria-label': speaking ? t('pauseSpeak') : t('speak'),
+                    onClick: event => {
+                      event.stopPropagation()
+                      setActive(index)
+                      toggle(stop)
+                    },
+                  }, speaking && !speech.paused ? '⏸' : '▶'),
                   h('span', { className: 'mg-stop-text' },
                     h('span', { className: 'mg-stop-label' }, stop.label),
-                    stop.note ? h('span', { className: 'mg-stop-note' }, stop.note) : null,
+                    h('span', { className: 'mg-stop-note' }, `${stop.no}${stop.note ? ` · ${stop.note}` : ''}`),
                   ),
                   vids ? h('span', { className: 'mg-stop-v' }, `▶ ${vids}`) : null,
                 )
@@ -1047,7 +1073,14 @@ window.__ModuleLoader__.load({
                 h('button', { type: 'button', className: 'mg-btn is-ghost', onClick: () => setEditing(false) }, t('mapCancel')),
               ),
             )
-            : h(HallReader, { stop: current, sections, t }),
+            : h(HallReader, {
+              stop: current,
+              sections,
+              speech,
+              onToggleSpeech: toggle,
+              onStopSpeech: stopSpeech,
+              t,
+            }),
         ),
       )
     }
@@ -1645,7 +1678,10 @@ a.mg-source-title:hover{color:var(--dsw-alias-brand-primary)}
 .mg-stop{appearance:none;font-family:inherit;display:flex;align-items:center;gap:8px;text-align:left;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);border-radius:10px;padding:7px 9px;cursor:pointer;color:var(--dsw-alias-label-primary);transition:border-color .12s,background .12s}
 .mg-stop:hover{border-color:var(--dsw-alias-brand-primary)}
 .mg-stop.is-active{border-color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 9%,var(--dsw-alias-bg-layer-1))}
-.mg-stop-no{flex:0 0 auto;width:22px;height:22px;border-radius:6px;display:flex;align-items:center;justify-content:center;background:var(--dsw-alias-brand-primary);color:#fff;font-size:10px;font-weight:600;font-variant-numeric:tabular-nums}
+.mg-stop-play{flex:0 0 auto;width:26px;height:26px;border-radius:50%;border:1px solid var(--dsw-alias-brand-primary);background:transparent;color:var(--dsw-alias-brand-primary);display:flex;align-items:center;justify-content:center;font-size:10px;line-height:1;cursor:pointer;font-family:inherit;padding:0}
+.mg-stop-play:hover{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 14%,transparent)}
+.mg-stop.is-speaking .mg-stop-play{background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-bg-base)}
+.mg-stop.is-speaking{border-color:var(--dsw-alias-brand-primary)}
 .mg-stop-text{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 auto}
 .mg-stop-label{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mg-stop-note{font-size:10.5px;color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
