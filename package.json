@@ -1,6 +1,6 @@
 {
   "name": "dsh-museum-guide",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "private": false,
   "type": "module",
   "description": "Museum guide writer for DeepSeek Harness: finds the official floor map first, researches the web plus social platforms, writes a 22,000-character hall-by-hall read-aloud script, attaches per-hall videos, and audits the length.",

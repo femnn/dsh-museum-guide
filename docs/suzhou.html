@@ -238,6 +238,9 @@ document.getElementById('rcopy').addEventListener('click', () => {
   });
 });
 renderRoute();
+if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
 </script>
 </body>
 </html>

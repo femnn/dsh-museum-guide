@@ -14,6 +14,12 @@ Museum guide writer for [DeepSeek Harness](https://github.com/deepseek-ai): give
 - **Route map + reader.** The Map tab lists stops 01, 02, 03… in walking order, grouped by floor; clicking a stop shows that hall’s text immediately, with text-to-speech playback in the browser.
 - **Speech.** Read the selected hall aloud with the browser’s speech synthesis (zh-CN), pause/resume/stop.
 
+## Live demo
+
+A phone-friendly, offline-capable single page for the Suzhou Archaeology Museum sample:
+
+https://femnn.github.io/dsh-museum-guide/suzhou.html
+
 ## Install
 
 ```sh
