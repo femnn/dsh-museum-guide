@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 export const name = 'museum-guide'
-export { parseMapText, listTtsModels, synthesize, stopTtsEngine }
+export { parseMapText, listTtsModels, synthesize, stopTtsEngine, startTtsJob, publicJob }
 export const inject = ['webServer', 'connection']
 
 const API_PREFIX = '/api/museum-guide'
@@ -25,6 +25,7 @@ const DEFAULTS = {
   ttsEnginePath: '/Applications/yovoice.app/Contents/Resources/engine/audiocpp_server',
   ttsModelDir: '~/.yovoice/models',
   ttsPort: 49371,
+  ttsFfmpegPath: '/Applications/yovoice.app/Contents/Resources/tools/ffmpeg',
   ttsVoiceRef: '',
   ttsReferenceText: '',
 }
@@ -406,6 +407,162 @@ function renderMarkdown(project) {
  * ------------------------------------------------------------------ */
 
 let ttsEngine = null
+const ttsJobs = new Map()
+
+function splitSpeechText(text, size) {
+  const clean = String(text || '').replace(/\r/g, '').trim()
+  const sentences = clean.split(/(?<=[。！？；!?;\n])/)
+  const chunks = []
+  let buffer = ''
+  for (const sentence of sentences) {
+    if ((buffer + sentence).length > size) {
+      if (buffer) chunks.push(buffer.trim())
+      buffer = sentence
+    } else {
+      buffer += sentence
+    }
+  }
+  if (buffer.trim()) chunks.push(buffer.trim())
+  return chunks.filter(chunk => chunk.length > 1)
+}
+
+function wavParts(bytes) {
+  if (bytes.length < 44 || bytes.toString('ascii', 0, 4) !== 'RIFF' || bytes.toString('ascii', 8, 12) !== 'WAVE') {
+    throw new Error('引擎返回的不是 WAV')
+  }
+  let offset = 12
+  let fmt = null
+  let data = null
+  while (offset + 8 <= bytes.length) {
+    const id = bytes.toString('ascii', offset, offset + 4)
+    const size = bytes.readUInt32LE(offset + 4)
+    const body = bytes.subarray(offset + 8, offset + 8 + size)
+    if (id === 'fmt ') fmt = body
+    if (id === 'data') { data = body; break }
+    offset += 8 + size + (size % 2)
+  }
+  if (!fmt || !data) throw new Error('WAV 缺少 fmt/data 块')
+  return { fmt, data }
+}
+
+function joinWav(files) {
+  const parsed = files.map(wavParts)
+  const fmt = parsed[0].fmt
+  const channels = fmt.readUInt16LE(2)
+  const rate = fmt.readUInt32LE(4)
+  const bits = fmt.readUInt16LE(14)
+  for (const part of parsed) {
+    if (part.fmt.readUInt16LE(2) !== channels || part.fmt.readUInt32LE(4) !== rate || part.fmt.readUInt16LE(14) !== bits) {
+      throw new Error('各段音频格式不一致')
+    }
+  }
+  const data = Buffer.concat(parsed.map(part => part.data))
+  const header = Buffer.alloc(12)
+  header.write('RIFF', 0, 'ascii')
+  header.writeUInt32LE(4 + 8 + fmt.length + 8 + data.length, 4)
+  header.write('WAVE', 8, 'ascii')
+  const fmtChunk = Buffer.alloc(8)
+  fmtChunk.write('fmt ', 0, 'ascii')
+  fmtChunk.writeUInt32LE(fmt.length, 4)
+  const dataHeader = Buffer.alloc(8)
+  dataHeader.write('data', 0, 'ascii')
+  dataHeader.writeUInt32LE(data.length, 4)
+  return Buffer.concat([header, fmtChunk, fmt, dataHeader, data])
+}
+
+async function runTtsJob(config, job, chunks, options) {
+  const models = await listTtsModels(config)
+  const modelPath = String(options.model || '').trim() || (models[0] && models[0].path) || ''
+  if (!modelPath) throw new Error('没有找到语音模型，请填写 .gguf 模型路径')
+  const info = await stat(expandHome(modelPath)).catch(() => null)
+  if (!info || !info.isFile()) throw new Error(`模型文件不存在：${modelPath}`)
+  job.message = '启动本地语音引擎'
+  const port = await ensureTtsEngine(config, expandHome(modelPath))
+  const root = await ensureDirs(config)
+  const audioDir = join(root, 'audio')
+  const tmpDir = join(root, 'audio', 'parts')
+  await mkdir(tmpDir, { recursive: true })
+  const voiceRef = String(options.voiceRef || config.ttsVoiceRef || '').trim()
+  const referenceText = String(options.referenceText || config.ttsReferenceText || '').trim()
+  const parts = []
+  job.progress = 2
+  for (let index = 0; index < chunks.length; index += 1) {
+    if (job.cancelled) throw new Error('已取消')
+    job.message = `合成第 ${index + 1}/${chunks.length} 段`
+    const body = { model: 'index', input: chunks[index], response_format: 'wav' }
+    if (voiceRef) {
+      body.voice_ref = expandHome(voiceRef)
+      if (referenceText) body.reference_text = referenceText
+    }
+    const response = await fetch(`http://127.0.0.1:${port}/v1/audio/speech`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(600000),
+    })
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '')
+      throw new Error(`第 ${index + 1} 段失败：${(detail || response.status).toString().slice(0, 160)}`)
+    }
+    const bytes = Buffer.from(await response.arrayBuffer())
+    if (bytes.length < 1024) throw new Error(`第 ${index + 1} 段返回为空`)
+    const part = join(tmpDir, `${job.id}-${index}.wav`)
+    await writeFile(part, bytes)
+    parts.push(part)
+    job.progress = Math.round(((index + 1) / chunks.length) * 90)
+  }
+  job.message = '合并音频'
+  const hash = createHash('sha1').update(`${modelPath}|${voiceRef}|${referenceText}|${chunks.join('')}`).digest('hex').slice(0, 24)
+  const out = join(audioDir, `${hash}.wav`)
+  const buffers = []
+  for (const part of parts) buffers.push(await readFile(part))
+  await writeFile(out, joinWav(buffers))
+  for (const part of parts) await unlink(part).catch(() => {})
+  job.url = `/api/museum-guide/audio?file=${encodeURIComponent(`${hash}.wav`)}`
+  job.message = '完成'
+  job.progress = 100
+  job.status = 'done'
+}
+
+function startTtsJob(config, text, options) {
+  const chunks = splitSpeechText(text, 320)
+  if (!chunks.length) throw new Error('没有可合成的文字')
+  const job = {
+    id: randomUUID().replace(/-/g, '').slice(0, 16),
+    status: 'running',
+    progress: 0,
+    total: chunks.length,
+    message: '排队中',
+    url: '',
+    error: '',
+    cancelled: false,
+    startedAt: Date.now(),
+  }
+  ttsJobs.set(job.id, job)
+  if (ttsJobs.size > 40) {
+    const oldest = [...ttsJobs.keys()][0]
+    ttsJobs.delete(oldest)
+  }
+  runTtsJob(config, job, chunks, options).catch(error => {
+    job.status = 'error'
+    job.error = String((error && error.message) || error)
+    job.message = '失败'
+  })
+  return job
+}
+
+function publicJob(job) {
+  return {
+    id: job.id,
+    status: job.status,
+    progress: job.progress,
+    total: job.total,
+    message: job.message,
+    url: job.url,
+    error: job.error,
+    elapsed: Math.round((Date.now() - job.startedAt) / 1000),
+  }
+}
 
 function expandHome(value) {
   return String(value || '').replace(/^~(?=$|[\\/])/, homedir())
@@ -451,12 +608,32 @@ function stopTtsEngine() {
   ttsEngine = null
 }
 
+async function engineModelAt(port) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/models`, { signal: AbortSignal.timeout(1500) })
+    if (!response.ok) return null
+    const data = await response.json()
+    const model = data && Array.isArray(data.data) ? data.data[0] : null
+    return model && model.path ? expandHome(model.path) : null
+  } catch {
+    return null
+  }
+}
+
 async function ensureTtsEngine(config, modelPath) {
-  const port = Number(config.ttsPort) || 49371
-  if (ttsEngine && ttsEngine.model === modelPath && ttsEngine.child && ttsEngine.child.exitCode === null) {
+  let port = Number(config.ttsPort) || 49371
+  const running = await engineModelAt(port)
+  if (running && running === expandHome(modelPath)) {
+    if (!ttsEngine || ttsEngine.port !== port || ttsEngine.model !== modelPath) {
+      ttsEngine = { child: ttsEngine ? ttsEngine.child : null, model: modelPath, port }
+    }
     return port
   }
+  if (ttsEngine && ttsEngine.model === modelPath && ttsEngine.child && ttsEngine.child.exitCode === null) {
+    return ttsEngine.port
+  }
   stopTtsEngine()
+  if (running) port = port + 1 + Math.floor(Math.random() * 30)
   const root = await ensureDirs(config)
   const configPath = join(root, 'tts-config.json')
   await writeFile(configPath, JSON.stringify({
@@ -675,15 +852,20 @@ export function apply(ctx, config) {
 
         if (method === 'POST' && route === '/tts') {
           const body = await readJsonBody(req)
-          const result = await synthesize(cfg, body.text, {
+          const job = startTtsJob(cfg, body.text, {
             model: body.model,
             voiceRef: body.voiceRef,
             referenceText: body.referenceText,
           })
-          sendOk(res, {
-            url: `/api/museum-guide/audio?file=${encodeURIComponent(result.file)}`,
-            cached: result.cached,
-          })
+          sendOk(res, publicJob(job))
+          return
+        }
+
+        if (method === 'GET' && route === '/tts-status') {
+          const id = url.searchParams.get('id') || ''
+          const job = ttsJobs.get(id)
+          if (!job) { sendFail(res, 404, '任务不存在或已过期'); return }
+          sendOk(res, publicJob(job))
           return
         }
 

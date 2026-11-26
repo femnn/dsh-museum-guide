@@ -122,7 +122,10 @@ window.__ModuleLoader__.load({
       ttsGenerating: '生成中…',
       ttsModel: '语音模型',
       ttsFailed: '生成失败',
-      ttsHint: '本机 YoVoice 模型，几秒到一分钟；生成后可播放或下载。',
+      ttsHint: '本机 YoVoice 模型；长厅会分段合成，进度实时更新。',
+      ttsModelPath: '模型路径',
+      ttsSeconds: '{n} 秒',
+      ttsChunks: '{n} 段',
       mapSchematic: '示意图：按官方空间编号与参观顺序绘制，现场细部以馆内标识为准。',
       mapOfficial: '官方导览图',
       uploadMap: '上传官方导览图照片',
@@ -873,26 +876,53 @@ window.__ModuleLoader__.load({
       const videos = parts.reduce((sum, section) => sum + ((section.videos || []).length), 0)
       const [copied, setCopied] = useState(false)
       const [audioUrl, setAudioUrl] = useState('')
-      const [ttsBusy, setTtsBusy] = useState(false)
+      const [ttsJob, setTtsJob] = useState(null)
       const [ttsError, setTtsError] = useState('')
       const playing = Boolean(speech && speech.no && stop && speech.no === stop.no)
 
       useEffect(() => {
         setAudioUrl('')
         setTtsError('')
+        setTtsJob(null)
       }, [stop && stop.no, ttsModel])
 
+      const jobId = ttsJob && ttsJob.status === 'running' ? ttsJob.id : ''
+      useEffect(() => {
+        if (!jobId) return undefined
+        let alive = true
+        const timer = window.setInterval(async () => {
+          try {
+            const status = await api(`/tts-status?id=${encodeURIComponent(jobId)}`)
+            if (!alive) return
+            setTtsJob(status)
+            if (status.status === 'done') {
+              setAudioUrl(status.url)
+              window.clearInterval(timer)
+            } else if (status.status === 'error') {
+              setTtsError(status.error || '生成失败')
+              window.clearInterval(timer)
+            }
+          } catch (failure) {
+            if (!alive) return
+            setTtsError(String(failure.message || failure))
+            window.clearInterval(timer)
+          }
+        }, 1000)
+        return () => {
+          alive = false
+          window.clearInterval(timer)
+        }
+      }, [jobId])
+
       const generate = useCallback(async () => {
-        setTtsBusy(true)
         setTtsError('')
+        setAudioUrl('')
         try {
           const text = parts.map(part => part.text || '').join('\n\n')
-          const value = await api('/tts', { method: 'POST', body: { id: projectId, text, model: ttsModel } })
-          setAudioUrl(value.url)
+          const job = await api('/tts', { method: 'POST', body: { id: projectId, text, model: ttsModel } })
+          setTtsJob(job)
         } catch (failure) {
           setTtsError(String(failure.message || failure))
-        } finally {
-          setTtsBusy(false)
         }
       }, [parts, projectId, ttsModel])
       if (!parts.length) {
@@ -934,24 +964,35 @@ window.__ModuleLoader__.load({
           ),
         ),
         h('div', { className: 'mg-tts' },
-          ttsModels.length > 1
-            ? h('label', { className: 'mg-tts-model' },
-              h('span', null, t('ttsModel')),
-              h('select', {
-                className: 'mg-select',
-                value: ttsModel,
-                onChange: event => onModelChange(event.target.value),
-              }, ttsModels.map(model => h('option', { key: model.path, value: model.path }, model.name))),
-            )
-            : null,
+          h('label', { className: 'mg-tts-model' },
+            h('span', null, t('ttsModelPath')),
+            h('input', {
+              className: 'mg-input mg-tts-path',
+              list: 'mg-tts-model-list',
+              value: ttsModel,
+              spellCheck: false,
+              placeholder: '~/.yovoice/models/…/xxx.gguf',
+              onChange: event => onModelChange(event.target.value),
+            }),
+            h('datalist', { id: 'mg-tts-model-list' },
+              ttsModels.map(model => h('option', { key: model.path, value: model.path }, model.name))),
+          ),
           h('button', {
             type: 'button',
             className: 'mg-btn is-ghost',
-            disabled: ttsBusy,
+            disabled: Boolean(jobId),
             onClick: generate,
-          }, ttsBusy ? t('ttsGenerating') : t('ttsGenerate')),
+          }, jobId ? t('ttsGenerating') : t('ttsGenerate')),
+          ttsJob && ttsJob.status === 'running'
+            ? h('span', { className: 'mg-tts-status' },
+              `${ttsJob.progress || 0}% · ${ttsJob.message || ''} · ${t('ttsSeconds', { n: ttsJob.elapsed || 0 })}`)
+            : null,
           ttsError ? h('span', { className: 'mg-tts-error' }, `${t('ttsFailed')}：${ttsError}`) : null,
         ),
+        ttsJob && ttsJob.status === 'running'
+          ? h('div', { className: 'mg-tts-progress' },
+            h('div', { className: 'mg-tts-progress-fill', style: { width: `${Math.max(2, ttsJob.progress || 0)}%` } }))
+          : null,
         audioUrl ? h('audio', { className: 'mg-audio', src: audioUrl, controls: true }) : null,
         h('div', { className: 'mg-reader-body' }, parts.map(part => h('article', { key: part.id, className: 'mg-reader-part' },
           h('h4', { className: 'mg-reader-sub' }, part.title),
@@ -975,11 +1016,15 @@ window.__ModuleLoader__.load({
 
       useEffect(() => {
         let alive = true
+        let saved = ''
+        try { saved = window.localStorage.getItem('mg.ttsModel') || '' } catch { /* 无 localStorage */ }
         api('/tts-models').then(list => {
-          if (!alive || !Array.isArray(list) || !list.length) return
+          if (!alive || !Array.isArray(list)) return
           setTtsModels(list)
-          setTtsModel(current => current || list[0].path)
-        }).catch(() => {})
+          setTtsModel(current => current || saved || (list[0] && list[0].path) || '')
+        }).catch(() => {
+          if (alive && saved) setTtsModel(saved)
+        })
         return () => { alive = false }
       }, [])
 
@@ -1161,7 +1206,10 @@ window.__ModuleLoader__.load({
               onStopSpeech: stopSpeech,
               ttsModels,
               ttsModel,
-              onModelChange: setTtsModel,
+              onModelChange: value => {
+                setTtsModel(value)
+                try { window.localStorage.setItem('mg.ttsModel', value) } catch { /* 忽略 */ }
+              },
               t,
             }),
         ),
@@ -1786,6 +1834,10 @@ a.mg-source-title:hover{color:var(--dsw-alias-brand-primary)}
 .mg-tts-model{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dsw-alias-label-secondary)}
 .mg-select{font-family:inherit;font-size:11.5px;padding:4px 6px;border-radius:7px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);max-width:240px}
 .mg-tts-error{font-size:11px;color:var(--dsw-alias-state-error-primary)}
+.mg-tts-path{min-width:260px;max-width:420px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
+.mg-tts-status{font-size:11px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
+.mg-tts-progress{height:6px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);overflow:hidden;margin-top:6px}
+.mg-tts-progress-fill{height:100%;border-radius:999px;background:var(--dsw-alias-brand-primary);transition:width .4s ease}
 .mg-audio{width:100%;height:34px;margin-top:2px}
 .mg-reader-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
 .mg-speaking{font-size:11px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
