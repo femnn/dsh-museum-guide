@@ -126,6 +126,10 @@ window.__ModuleLoader__.load({
       ttsModelPath: '模型路径',
       ttsSeconds: '{n} 秒',
       ttsChunks: '{n} 段',
+      ttsPick: '选择…',
+      ttsOpenFolder: '打开音频文件夹',
+      ttsOpenModel: '打开模型文件夹',
+      ttsDuration: '本厅音频 {n}',
       mapSchematic: '示意图：按官方空间编号与参观顺序绘制，现场细部以馆内标识为准。',
       mapOfficial: '官方导览图',
       uploadMap: '上传官方导览图照片',
@@ -759,6 +763,10 @@ window.__ModuleLoader__.load({
     }
 
     function hallParts(sections, stop) {
+      if (stop && Array.isArray(stop.parts) && stop.parts.length) {
+        const byTitle = new Map((sections || []).map(section => [section.title, section]))
+        return stop.parts.map(title => byTitle.get(title)).filter(Boolean)
+      }
       const halls = (sections || []).filter(section => section.kind === 'hall')
       const norm = value => String(value || '').replace(/\s+/g, '')
       const label = norm(stop && stop.label)
@@ -919,7 +927,7 @@ window.__ModuleLoader__.load({
         setAudioUrl('')
         try {
           const text = parts.map(part => part.text || '').join('\n\n')
-          const job = await api('/tts', { method: 'POST', body: { id: projectId, text, model: ttsModel } })
+          const job = await api('/tts', { method: 'POST', body: { id: projectId, stop: stop.label, text, model: ttsModel } })
           setTtsJob(job)
         } catch (failure) {
           setTtsError(String(failure.message || failure))
@@ -980,6 +988,21 @@ window.__ModuleLoader__.load({
           h('button', {
             type: 'button',
             className: 'mg-btn is-ghost',
+            onClick: async () => {
+              try {
+                const value = await api('/pick-model', { method: 'POST', body: {} })
+                if (value && value.path) onModelChange(value.path)
+              } catch { /* 取消 */ }
+            },
+          }, t('ttsPick')),
+          h('button', {
+            type: 'button',
+            className: 'mg-btn is-ghost',
+            onClick: () => api('/open-folder', { method: 'POST', body: { kind: 'model', path: ttsModel } }).catch(() => {}),
+          }, t('ttsOpenModel')),
+          h('button', {
+            type: 'button',
+            className: 'mg-btn is-ghost',
             disabled: Boolean(jobId),
             onClick: generate,
           }, jobId ? t('ttsGenerating') : t('ttsGenerate')),
@@ -993,7 +1016,17 @@ window.__ModuleLoader__.load({
           ? h('div', { className: 'mg-tts-progress' },
             h('div', { className: 'mg-tts-progress-fill', style: { width: `${Math.max(2, ttsJob.progress || 0)}%` } }))
           : null,
-        audioUrl ? h('audio', { className: 'mg-audio', src: audioUrl, controls: true }) : null,
+        audioUrl
+          ? h('div', { className: 'mg-audio-row' },
+            h('audio', { className: 'mg-audio', src: audioUrl, controls: true }),
+            h('span', { className: 'mg-tts-status' }, ttsJob && ttsJob.duration ? t('ttsDuration', { n: `${Math.floor(ttsJob.duration / 60)}:${String(Math.round(ttsJob.duration % 60)).padStart(2, '0')}` }) : ''),
+            h('button', {
+              type: 'button',
+              className: 'mg-btn is-ghost',
+              onClick: () => api('/open-folder', { method: 'POST', body: { kind: 'audio' } }).catch(() => {}),
+            }, t('ttsOpenFolder')),
+          )
+          : null,
         h('div', { className: 'mg-reader-body' }, parts.map(part => h('article', { key: part.id, className: 'mg-reader-part' },
           h('h4', { className: 'mg-reader-sub' }, part.title),
           h('div', { className: 'mg-reader-text' }, part.text || ''),
@@ -1838,7 +1871,8 @@ a.mg-source-title:hover{color:var(--dsw-alias-brand-primary)}
 .mg-tts-status{font-size:11px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
 .mg-tts-progress{height:6px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);overflow:hidden;margin-top:6px}
 .mg-tts-progress-fill{height:100%;border-radius:999px;background:var(--dsw-alias-brand-primary);transition:width .4s ease}
-.mg-audio{width:100%;height:34px;margin-top:2px}
+.mg-audio-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.mg-audio{flex:1 1 320px;min-width:220px;height:34px;margin-top:2px}
 .mg-reader-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
 .mg-speaking{font-size:11px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
 .mg-reader-part{min-width:0}

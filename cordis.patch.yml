@@ -7,9 +7,9 @@
         # 项目与导出文件放在这里；留空用 ~/.dsh/museum-guide。
         dataDir: ''
         # 逐字稿目标字数与下限：低于下限审核不通过。
-        targetChars: 22000
-        minChars: 20000
+        targetChars: 50000
+        minChars: 45000
         # 开场允许的字数上限（约 5 分钟）。
         introMaxChars: 1300
         # 折算讲解时长用：每分钟约多少字。
-        charsPerMinute: 240
+        charsPerMinute: 420

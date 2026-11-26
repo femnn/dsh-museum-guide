@@ -18,10 +18,10 @@ const API_PREFIX = '/api/museum-guide'
 const PROJECT_ID_RE = /^[a-z0-9]{8,24}$/
 
 const DEFAULTS = {
-  targetChars: 22000,
-  minChars: 20000,
+  targetChars: 50000,
+  minChars: 45000,
   introMaxChars: 1300,
-  charsPerMinute: 240,
+  charsPerMinute: 420,
   ttsEnginePath: '/Applications/yovoice.app/Contents/Resources/engine/audiocpp_server',
   ttsModelDir: '~/.yovoice/models',
   ttsPort: 49371,
@@ -512,13 +512,20 @@ async function runTtsJob(config, job, chunks, options) {
     job.progress = Math.round(((index + 1) / chunks.length) * 90)
   }
   job.message = '合并音频'
-  const hash = createHash('sha1').update(`${modelPath}|${voiceRef}|${referenceText}|${chunks.join('')}`).digest('hex').slice(0, 24)
-  const out = join(audioDir, `${hash}.wav`)
+  const stamp = String(options.stop || '').trim()
+  const safeName = stamp
+    ? `${job.projectId || 'project'}-${stamp.replace(/[\\/:*?"<>|\s]+/g, '-')}.wav`
+    : `${createHash('sha1').update(`${modelPath}|${voiceRef}|${referenceText}|${chunks.join('')}`).digest('hex').slice(0, 24)}.wav`
+  const out = join(audioDir, safeName)
   const buffers = []
   for (const part of parts) buffers.push(await readFile(part))
   await writeFile(out, joinWav(buffers))
   for (const part of parts) await unlink(part).catch(() => {})
-  job.url = `/api/museum-guide/audio?file=${encodeURIComponent(`${hash}.wav`)}`
+  const finalBytes = await readFile(out)
+  const wav = wavParts(finalBytes)
+  const byteRate = wav.fmt.readUInt32LE(8)
+  job.duration = byteRate > 0 ? Math.round((wav.data.length / byteRate) * 10) / 10 : 0
+  job.url = `/api/museum-guide/audio?file=${encodeURIComponent(safeName)}`
   job.message = '完成'
   job.progress = 100
   job.status = 'done'
@@ -534,8 +541,10 @@ function startTtsJob(config, text, options) {
     total: chunks.length,
     message: '排队中',
     url: '',
+    duration: 0,
     error: '',
     cancelled: false,
+    projectId: options.projectId || '',
     startedAt: Date.now(),
   }
   ttsJobs.set(job.id, job)
@@ -559,6 +568,7 @@ function publicJob(job) {
     total: job.total,
     message: job.message,
     url: job.url,
+    duration: job.duration || 0,
     error: job.error,
     elapsed: Math.round((Date.now() - job.startedAt) / 1000),
   }
@@ -845,6 +855,41 @@ export function apply(ctx, config) {
           return
         }
 
+        if (method === 'POST' && route === '/pick-model') {
+          try {
+            const { execFile } = await import('node:child_process')
+            const path = await new Promise((resolve, reject) => {
+              execFile('osascript', ['-e', 'POSIX path of (choose file with prompt "选择语音模型" of type {"gguf"})'], { timeout: 120000 }, (error, stdout) => {
+                if (error) reject(error)
+                else resolve(String(stdout || '').trim())
+              })
+            })
+            if (!path) throw new Error('没有选择文件')
+            sendOk(res, { path })
+          } catch (error) {
+            sendFail(res, 500, '选择文件被取消或失败')
+          }
+          return
+        }
+
+        if (method === 'POST' && route === '/open-folder') {
+          try {
+            const body = await readJsonBody(req)
+            const root = await ensureDirs(cfg)
+            const target = body.kind === 'model'
+              ? expandHome(body.path || cfg.ttsModelDir || '')
+              : join(root, 'audio')
+            const { execFile } = await import('node:child_process')
+            await new Promise((resolve, reject) => {
+              execFile('open', ['-R', target], { timeout: 20000 }, error => (error ? reject(error) : resolve()))
+            })
+            sendOk(res, { opened: target })
+          } catch (error) {
+            sendFail(res, 500, '打开文件夹失败')
+          }
+          return
+        }
+
         if (method === 'GET' && route === '/tts-models') {
           sendOk(res, await listTtsModels(cfg))
           return
@@ -856,6 +901,8 @@ export function apply(ctx, config) {
             model: body.model,
             voiceRef: body.voiceRef,
             referenceText: body.referenceText,
+            projectId: body.id,
+            stop: body.stop,
           })
           sendOk(res, publicJob(job))
           return
